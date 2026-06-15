@@ -414,11 +414,18 @@ def build_stats_report() -> str:
 
 @bot.middleware_handler(update_types=["message"])
 def stats_middleware(bot_instance, message):
-    """Срабатывает на каждое сообщение во всех чатах, обновляет статистику."""
-    try:
-        track_message_stats(message)
-    except Exception:
-        logger.exception("Ошибка при записи статистики сообщения.")
+    """
+    Срабатывает на каждое сообщение во всех чатах.
+    Запись в БД выполняется в отдельном потоке, чтобы не задерживать
+    ответ бота на текущую команду.
+    """
+    def _track():
+        try:
+            track_message_stats(message)
+        except Exception:
+            logger.exception("Ошибка при записи статистики сообщения.")
+
+    threading.Thread(target=_track, daemon=True).start()
 
 
 # =============================================================================
