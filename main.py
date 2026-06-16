@@ -444,6 +444,7 @@ HELP_TEXT = (
     "Описание необязательно. По срабатыванию бот напишет в чат и упомянет вас.\n"
     "Примеры:\n"
     "  <code>/t 1д5ч30с купить продукты</code>\n"
+    "  <code>/t 2h30m buy groceries</code>\n"
     "  <code>/t 5м вытащить мясо с морозильника</code>\n\n"
 
     "<b>📑 Мои таймеры</b>\n"
@@ -557,7 +558,7 @@ def handle_stats(message: types.Message):
 
 
 # =============================================================================
-#                  МИНИ-СЕРВЕР ДЛЯ "ПРОБУЖДЕНИЯ" НА БЕСПЛАТНОМ ХОСТИНГЕ
+#                  ВЕБ-СЕРВЕР (WEBHOOK + HEALTHCHECK)
 # =============================================================================
 
 web_app = Flask(__name__)
@@ -565,13 +566,23 @@ web_app = Flask(__name__)
 
 @web_app.route("/")
 def health_check():
-    """Render проверяет этот адрес, чтобы понять, что приложение живо."""
+    """UptimeRobot пингует этот адрес, чтобы Render не засыпал."""
     return "Bot is running!"
 
 
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
+@web_app.route("/webhook", methods=["POST"])
+def webhook():
+    """
+    Telegram присылает сюда POST-запрос при каждом новом сообщении.
+    Передаём данные боту для обработки.
+    """
+    import flask
+    if flask.request.headers.get("content-type") == "application/json":
+        json_update = flask.request.get_data(as_text=True)
+        update = types.Update.de_json(json_update)
+        bot.process_new_updates([update])
+        return "ok", 200
+    return "bad request", 400
 
 
 # =============================================================================
@@ -584,15 +595,41 @@ def main():
     database.init_db()
     restore_timers()
 
-    threading.Thread(target=run_web_server, daemon=True).start()
+    # Адрес на Render, куда Telegram будет слать обновления.
+    # Render всегда даёт HTTPS, что обязательно для webhook.
+    webhook_url = os.environ.get("WEBHOOK_URL", "").rstrip("/")
+    if not webhook_url:
+        # Если WEBHOOK_URL не задан — fallback на polling (удобно для
+        # локального тестирования в VS Code без ngrok).
+        logger.warning(
+            "WEBHOOK_URL не задан — запускаю polling (только для локального теста)."
+        )
+        while True:
+            try:
+                logger.info("Запуск polling...")
+                bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
+            except Exception:
+                logger.exception("Бот упал с ошибкой, перезапуск через 5 секунд...")
+                time.sleep(5)
+        return
 
-    while True:
-        try:
-            logger.info("Запуск polling...")
-            bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
-        except Exception:
-            logger.exception("Бот упал с ошибкой, перезапуск через 5 секунд...")
-            time.sleep(5)
+    # Снимаем старый webhook (если был) и регистрируем новый.
+    # drop_pending_updates=True — игнорируем сообщения накопившиеся
+    # пока бот был выключен (аналог skip_pending в polling).
+    bot.remove_webhook()
+    time.sleep(1)
+    bot.set_webhook(
+        url=f"{webhook_url}/webhook",
+        drop_pending_updates=True,
+    )
+    logger.info("Webhook зарегистрирован: %s/webhook", webhook_url)
+
+    port = int(os.environ.get("PORT", 10000))
+    logger.info("Запуск Flask на порту %s...", port)
+
+    # Flask теперь основной процесс — он принимает запросы от Telegram.
+    # threaded=True чтобы несколько запросов обрабатывались параллельно.
+    web_app.run(host="0.0.0.0", port=port, threaded=True)
 
 
 if __name__ == "__main__":
