@@ -574,24 +574,45 @@ CLAN_TAG = "『FSB』"
 _AD_MARKERS = ("t.me/", "http")
 
 
+def _has_ad_link(message: types.Message) -> bool:
+    """
+    Проверяет наличие рекламных ссылок в сообщении.
+    """
+    text = message.text or message.caption or ""
+
+    # Проверка 1: голые ссылки в тексте
+    if any(marker in text for marker in _AD_MARKERS):
+        return True
+
+    # Проверка 2: скрытые ссылки в entities (Markdown [текст](url))
+    entities = message.entities or message.caption_entities or []
+    for entity in entities:
+        if entity.type in ("url", "text_link"):
+            url = entity.url or ""  # text_link хранит url в атрибуте
+            if any(marker in url for marker in _AD_MARKERS):
+                return True
+
+    return False
+
+
 @bot.message_handler(
     func=lambda m: m.from_user is not None and m.from_user.id == BFG_BOT_ID
 )
 def handle_bfg_message(message: types.Message):
-    """Перехватывает все сообщения от BFG-бота и удаляет чистую рекламу."""
-    # Собираем весь текст сообщения в одну строку для проверки
+    """
+    Перехватывает все сообщения от BFG-бота и удаляет чистую рекламу.
+    """
+    # Собираем весь текст сообщения для проверки тега клана
     text = message.text or message.caption or ""
 
-    # Есть ли в сообщении рекламная ссылка?
-    has_ad = any(marker in text for marker in _AD_MARKERS)
+    # Есть ли в сообщении рекламная ссылка (в тексте или в entities)?
+    has_ad = _has_ad_link(message)
 
     if not has_ad:
-        # Нет ссылок — не реклама, игнорируем
         return
 
     # Есть ссылка — проверяем есть ли тег клана
     if CLAN_TAG in text:
-        # Тег клана есть — это игровой ответ со ссылкой внизу, не трогаем
         return
 
     # Ссылка есть, тега клана нет — чистый спам, удаляем
