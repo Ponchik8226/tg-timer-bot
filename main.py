@@ -652,6 +652,9 @@ def main():
     bot.set_webhook(
         url=f"{webhook_url}/webhook",
         drop_pending_updates=True,
+        # Без этого Telegram присылает только сообщения-команды боту.
+        # С этим — все сообщения из всех чатов (нужно для статистики).
+        allowed_updates=["message", "edited_message", "channel_post"],
     )
     logger.info("Webhook зарегистрирован: %s/webhook", webhook_url)
 
