@@ -152,20 +152,9 @@ def init_db():
                         videos_count BIGINT NOT NULL DEFAULT 0,
                         voice_count BIGINT NOT NULL DEFAULT 0,
                         gifs_count BIGINT NOT NULL DEFAULT 0,
-                        forwards_count BIGINT NOT NULL DEFAULT 0,
                         last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                         PRIMARY KEY (user_id, chat_id)
                     )
-                    """
-                )
-
-                # Добавляем колонку в уже существующую таблицу если её нет.
-                # IF NOT EXISTS для ALTER COLUMN появился в Postgres 9.6+,
-                # на Neon это поддерживается.
-                cur.execute(
-                    """
-                    ALTER TABLE user_chat_stats
-                    ADD COLUMN IF NOT EXISTS forwards_count BIGINT NOT NULL DEFAULT 0
                     """
                 )
     finally:
@@ -252,18 +241,17 @@ _UPSERT_CHAT_SQL = """
 _UPSERT_STATS_SQL = """
     INSERT INTO user_chat_stats (
         user_id, chat_id, messages_count, chars_count, stickers_count,
-        photos_count, videos_count, voice_count, gifs_count, forwards_count, last_seen_at
+        photos_count, videos_count, voice_count, gifs_count, last_seen_at
     )
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+    VALUES (%s, %s, 1, %s, %s, %s, %s, %s, %s, now())
     ON CONFLICT (user_id, chat_id) DO UPDATE SET
-        messages_count = user_chat_stats.messages_count + EXCLUDED.messages_count,
+        messages_count = user_chat_stats.messages_count + 1,
         chars_count = user_chat_stats.chars_count + EXCLUDED.chars_count,
         stickers_count = user_chat_stats.stickers_count + EXCLUDED.stickers_count,
         photos_count = user_chat_stats.photos_count + EXCLUDED.photos_count,
         videos_count = user_chat_stats.videos_count + EXCLUDED.videos_count,
         voice_count = user_chat_stats.voice_count + EXCLUDED.voice_count,
         gifs_count = user_chat_stats.gifs_count + EXCLUDED.gifs_count,
-        forwards_count = user_chat_stats.forwards_count + EXCLUDED.forwards_count,
         last_seen_at = now()
 """
 
@@ -271,7 +259,7 @@ _UPSERT_STATS_SQL = """
 def record_message_stats(
     user_id, username, first_name, last_name,
     chat_id, chat_type, chat_title,
-    messages, chars, stickers, photos, videos, voice, gifs, forwards,
+    chars, stickers, photos, videos, voice, gifs,
 ):
     """Обновляет данные пользователя, чата и счётчики по одному сообщению."""
     if not db_enabled() or _pool is None:
@@ -285,8 +273,7 @@ def record_message_stats(
                 cur.execute(_UPSERT_CHAT_SQL, (chat_id, chat_type, chat_title))
                 cur.execute(
                     _UPSERT_STATS_SQL,
-                    (user_id, chat_id, messages, chars, stickers,
-                     photos, videos, voice, gifs, forwards),
+                    (user_id, chat_id, chars, stickers, photos, videos, voice, gifs),
                 )
     finally:
         _put_conn(conn)
@@ -313,14 +300,13 @@ def get_stats_overview():
                         COALESCE(SUM(photos_count), 0),
                         COALESCE(SUM(videos_count), 0),
                         COALESCE(SUM(voice_count), 0),
-                        COALESCE(SUM(gifs_count), 0),
-                        COALESCE(SUM(forwards_count), 0)
+                        COALESCE(SUM(gifs_count), 0)
                     FROM user_chat_stats
                     """
                 )
                 (
                     messages, chars, stickers,
-                    photos, videos, voice, gifs, forwards,
+                    photos, videos, voice, gifs,
                 ) = cur.fetchone()
     finally:
         _put_conn(conn)
@@ -333,7 +319,6 @@ def get_stats_overview():
         "videos": videos,
         "voice": voice,
         "gifs": gifs,
-        "forwards": forwards,
     }
     return total_users, total_chats, totals
 
@@ -341,7 +326,7 @@ def get_stats_overview():
 def get_top_activity(limit=10):
     """
     Возвращает топ записей (пользователь, чат) по количеству сообщений:
-    (username, first_name, chat_title, messages, chars, stickers, photos, videos, voice, gifs, forwards)
+    (username, first_name, chat_title, messages, chars, stickers, photos, videos, voice, gifs)
     """
     conn = _get_conn()
     try:
@@ -351,8 +336,7 @@ def get_top_activity(limit=10):
                     """
                     SELECT u.username, u.first_name, c.title,
                            s.messages_count, s.chars_count, s.stickers_count,
-                           s.photos_count, s.videos_count, s.voice_count, s.gifs_count,
-                           s.forwards_count
+                           s.photos_count, s.videos_count, s.voice_count, s.gifs_count
                     FROM user_chat_stats s
                     JOIN users u ON u.user_id = s.user_id
                     JOIN chats c ON c.chat_id = s.chat_id
