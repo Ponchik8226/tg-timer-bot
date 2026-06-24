@@ -1,21 +1,24 @@
 """
 Telegram-бот для личного использования в группе (pyTelegramBotAPI).
 
-Команды:
+Команды пользователей:
   /ping                              — проверка отклика + аптайм
   /t, /timer, "тайм", "таймер"       — установка таймера
   /mytimers, "таймеры"              — список своих таймеров
   /del, /del_timer, /cancel,
   "удалить", "отмена"                — удаление таймера
-  /start, /help                      — справка
+  /start                             — приветствие
+  /help                              — список команд
   /myid                              — показать свой Telegram ID
-  "стата", "статистика"              — статистика (только админ, только ЛС)
+
+Админ-команды (только в ЛС, только для ADMIN_IDS) — см. admin.py.
 
 Архитектура:
   config.py   — объект bot, переменные окружения, логирование
   database.py — вся работа с БД (таймеры, статистика)
   utils.py    — мелкие хелперы
-  main.py     — этот файл: все хендлеры, middleware, Flask, запуск бота
+  admin.py    — все команды для администраторов
+  main.py     — этот файл: пользовательские хендлеры, middleware, Flask, запуск
 
 ВАЖНО: для учёта статистики во всех чатах нужно отключить Privacy Mode
 бота через @BotFather (Bot Settings -> Group Privacy -> Turn off).
@@ -27,9 +30,10 @@ import re
 import threading
 import time
 
-from flask import Flask
+from flask import Flask, request as flask_request
 from telebot import types
 
+import admin
 import database
 from config import bot, logger, ADMIN_IDS
 from utils import (
@@ -465,6 +469,9 @@ def stats_middleware(bot_instance, message):
 #                          ОБРАБОТЧИКИ КОМАНД
 # =============================================================================
 
+# Username бота заполняется при старте в main() через bot.get_me()
+_BOT_USERNAME = ""
+
 HELP_TEXT = (
     "<b>🤖 Команды бота</b>\n\n"
 
@@ -476,6 +483,7 @@ HELP_TEXT = (
     "Описание необязательно. По срабатыванию бот напишет в чат и упомянет вас.\n"
     "Примеры:\n"
     "  <code>/t 1д5ч30с купить продукты</code>\n"
+    "  <code>/t 2h30m buy groceries</code>\n"
     "  <code>/t 5м вытащить мясо с морозильника</code>\n\n"
 
     "<b>📑 Мои таймеры</b>\n"
@@ -496,8 +504,32 @@ HELP_TEXT = (
 )
 
 
-@bot.message_handler(commands=["start", "help"])
+def _is_for_me(message: types.Message) -> bool:
+    """
+    Проверяет что слэш-команда адресована нашему боту (или вообще без @).
+    Нужно чтобы не отвечать на /start@другой_бот в группах.
+    """
+    text = message.text or ""
+    if "@" not in text:
+        return True
+    return f"@{_BOT_USERNAME}".lower() in text.lower()
+
+
+@bot.message_handler(commands=["start"])
+def handle_start(message: types.Message):
+    if not _is_for_me(message):
+        return
+    bot.reply_to(
+        message,
+        "👋 Привет! Я бот для напоминаний и статистики чата.\n\n"
+        "Чтобы увидеть список команд — напишите /help",
+    )
+
+
+@bot.message_handler(commands=["help"])
 def handle_help(message: types.Message):
+    if not _is_for_me(message):
+        return
     bot.reply_to(message, HELP_TEXT)
 
 
@@ -569,25 +601,6 @@ def handle_cancel_text(message: types.Message):
     _process_cancel_request(message, args_text)
 
 
-@bot.message_handler(
-    func=lambda m: bool(re.match(r"^/?(стата|статистика)\b", (m.text or ""), re.IGNORECASE))
-)
-def handle_stats(message: types.Message):
-    """Статистика — только в личке бота и только для админов из ADMIN_IDS."""
-    if message.chat.type != "private":
-        return
-    if message.from_user.id not in ADMIN_IDS:
-        return
-
-    if not database.db_enabled():
-        bot.reply_to(message, "⚠️ База данных не настроена — статистика недоступна.")
-        return
-
-    report = build_stats_report()
-    for chunk in split_message(report):
-        bot.send_message(message.chat.id, chunk)
-
-
 # =============================================================================
 #                  ВЕБ-СЕРВЕР (WEBHOOK + HEALTHCHECK)
 # =============================================================================
@@ -604,12 +617,11 @@ def health_check():
 @web_app.route("/webhook", methods=["POST"])
 def webhook():
     """
-    Telegram присылает сюда POST-запрос при каждом новом сообщении.
-    Передаём данные боту для обработки.
+    Telegram присылает сюда POST-запрос при каждом новом сообщении
+    или нажатии на inline-кнопку (callback_query).
     """
-    import flask
-    if flask.request.headers.get("content-type") == "application/json":
-        json_update = flask.request.get_data(as_text=True)
+    if flask_request.headers.get("content-type") == "application/json":
+        json_update = flask_request.get_data(as_text=True)
         update = types.Update.de_json(json_update)
         bot.process_new_updates([update])
         return "ok", 200
@@ -621,17 +633,27 @@ def webhook():
 # =============================================================================
 
 def main():
+    global _BOT_USERNAME
+
     logger.info("Бот запускается...")
+
+    # Получаем username бота — нужен для фильтрации чужих команд в группах
+    try:
+        me = bot.get_me()
+        _BOT_USERNAME = me.username or ""
+        logger.info("Бот: @%s (id=%s)", _BOT_USERNAME, me.id)
+    except Exception:
+        logger.exception("Не удалось получить информацию о боте.")
 
     database.init_db()
     restore_timers()
 
+    # Регистрируем хендлеры админ-команд
+    admin.register(_BOT_USERNAME)
+
     # Адрес на Render, куда Telegram будет слать обновления.
-    # Render всегда даёт HTTPS, что обязательно для webhook.
     webhook_url = os.environ.get("WEBHOOK_URL", "").rstrip("/")
     if not webhook_url:
-        # Если WEBHOOK_URL не задан — fallback на polling (удобно для
-        # локального тестирования в VS Code без ngrok).
         logger.warning(
             "WEBHOOK_URL не задан — запускаю polling (только для локального теста)."
         )
@@ -644,25 +666,18 @@ def main():
                 time.sleep(5)
         return
 
-    # Снимаем старый webhook (если был) и регистрируем новый.
-    # drop_pending_updates=True — игнорируем сообщения накопившиеся
-    # пока бот был выключен (аналог skip_pending в polling).
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(
         url=f"{webhook_url}/webhook",
         drop_pending_updates=True,
-        # Без этого Telegram присылает только сообщения-команды боту.
-        # С этим — все сообщения из всех чатов (нужно для статистики).
-        allowed_updates=["message", "edited_message", "channel_post"],
+        # callback_query — для inline-кнопок пагинации в топах
+        allowed_updates=["message", "edited_message", "channel_post", "callback_query"],
     )
     logger.info("Webhook зарегистрирован: %s/webhook", webhook_url)
 
     port = int(os.environ.get("PORT", 10000))
     logger.info("Запуск Flask на порту %s...", port)
-
-    # Flask теперь основной процесс — он принимает запросы от Telegram.
-    # threaded=True чтобы несколько запросов обрабатывались параллельно.
     web_app.run(host="0.0.0.0", port=port, threaded=True)
 
 

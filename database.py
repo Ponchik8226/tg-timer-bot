@@ -364,3 +364,256 @@ def get_top_activity(limit=10):
                 return cur.fetchall()
     finally:
         _put_conn(conn)
+
+
+# =============================================================================
+#              НОВЫЕ ЗАПРОСЫ ДЛЯ АДМИН-КОМАНД
+# =============================================================================
+
+def get_global_top_page(offset: int, limit: int = 10):
+    """
+    Глобальный топ по всем чатам с пагинацией.
+    Возвращает (rows, total_count).
+    rows: (user_id, username, first_name, chat_title, messages, chars,
+           stickers, photos, videos, voice, gifs, forwards)
+    """
+    if not db_enabled() or _pool is None:
+        return [], 0
+
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM user_chat_stats")
+                total = cur.fetchone()[0]
+
+                cur.execute(
+                    """
+                    SELECT u.user_id, u.username, u.first_name, c.title,
+                           s.messages_count, s.chars_count, s.stickers_count,
+                           s.photos_count, s.videos_count, s.voice_count,
+                           s.gifs_count, s.forwards_count
+                    FROM user_chat_stats s
+                    JOIN users u ON u.user_id = s.user_id
+                    JOIN chats c ON c.chat_id = s.chat_id
+                    ORDER BY s.messages_count DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (limit, offset),
+                )
+                return cur.fetchall(), total
+    finally:
+        _put_conn(conn)
+
+
+def find_chats_by_name(query: str):
+    """
+    Ищет чаты по частичному совпадению названия (регистронезависимо).
+    Возвращает список (chat_id, title, chat_type).
+    """
+    if not db_enabled() or _pool is None:
+        return []
+
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT chat_id, title, chat_type
+                    FROM chats
+                    WHERE LOWER(title) LIKE LOWER(%s)
+                    ORDER BY title
+                    LIMIT 10
+                    """,
+                    (f"%{query}%",),
+                )
+                return cur.fetchall()
+    finally:
+        _put_conn(conn)
+
+
+def get_chat_by_id(chat_id: int):
+    """Возвращает (chat_id, title, chat_type) или None."""
+    if not db_enabled() or _pool is None:
+        return None
+
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT chat_id, title, chat_type FROM chats WHERE chat_id = %s",
+                    (chat_id,),
+                )
+                return cur.fetchone()
+    finally:
+        _put_conn(conn)
+
+
+def get_chat_top_page(chat_id: int, offset: int, limit: int = 10):
+    """
+    Топ пользователей в конкретном чате с пагинацией.
+    Возвращает (rows, total_count).
+    rows: (user_id, username, first_name, messages, chars,
+           stickers, photos, videos, voice, gifs, forwards)
+    """
+    if not db_enabled() or _pool is None:
+        return [], 0
+
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM user_chat_stats WHERE chat_id = %s",
+                    (chat_id,),
+                )
+                total = cur.fetchone()[0]
+
+                cur.execute(
+                    """
+                    SELECT u.user_id, u.username, u.first_name,
+                           s.messages_count, s.chars_count, s.stickers_count,
+                           s.photos_count, s.videos_count, s.voice_count,
+                           s.gifs_count, s.forwards_count
+                    FROM user_chat_stats s
+                    JOIN users u ON u.user_id = s.user_id
+                    WHERE s.chat_id = %s
+                    ORDER BY s.messages_count DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (chat_id, limit, offset),
+                )
+                return cur.fetchall(), total
+    finally:
+        _put_conn(conn)
+
+
+def get_user_by_id(user_id: int):
+    """
+    Возвращает полную информацию о пользователе:
+    (user_id, username, first_name, last_name, registered_at, last_seen_at)
+    или None если не найден.
+    """
+    if not db_enabled() or _pool is None:
+        return None
+
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, username, first_name, last_name,
+                           registered_at, last_seen_at
+                    FROM users WHERE user_id = %s
+                    """,
+                    (user_id,),
+                )
+                return cur.fetchone()
+    finally:
+        _put_conn(conn)
+
+
+def get_user_by_username(username: str):
+    """
+    Ищет пользователя по username (без @, регистронезависимо).
+    Возвращает (user_id, username, first_name, last_name,
+                registered_at, last_seen_at) или None.
+    """
+    if not db_enabled() or _pool is None:
+        return None
+
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT user_id, username, first_name, last_name,
+                           registered_at, last_seen_at
+                    FROM users WHERE LOWER(username) = LOWER(%s)
+                    """,
+                    (username,),
+                )
+                return cur.fetchone()
+    finally:
+        _put_conn(conn)
+
+
+def get_user_stats_all_chats(user_id: int):
+    """
+    Возвращает статистику пользователя по всем чатам:
+    список (chat_title, messages, chars, stickers, photos, videos, voice, gifs, forwards)
+    отсортированный по сообщениям.
+    """
+    if not db_enabled() or _pool is None:
+        return []
+
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT c.title,
+                           s.messages_count, s.chars_count, s.stickers_count,
+                           s.photos_count, s.videos_count, s.voice_count,
+                           s.gifs_count, s.forwards_count
+                    FROM user_chat_stats s
+                    JOIN chats c ON c.chat_id = s.chat_id
+                    WHERE s.user_id = %s
+                    ORDER BY s.messages_count DESC
+                    """,
+                    (user_id,),
+                )
+                return cur.fetchall()
+    finally:
+        _put_conn(conn)
+
+
+def get_stats_overview():
+    """Возвращает (total_users, total_chats, totals_dict) с суммарными счётчиками."""
+    if not db_enabled() or _pool is None:
+        return 0, 0, {k: 0 for k in
+                      ("messages", "chars", "stickers", "photos",
+                       "videos", "voice", "gifs", "forwards")}
+
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM users")
+                total_users = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM chats")
+                total_chats = cur.fetchone()[0]
+
+                cur.execute(
+                    """
+                    SELECT
+                        COALESCE(SUM(messages_count), 0),
+                        COALESCE(SUM(chars_count), 0),
+                        COALESCE(SUM(stickers_count), 0),
+                        COALESCE(SUM(photos_count), 0),
+                        COALESCE(SUM(videos_count), 0),
+                        COALESCE(SUM(voice_count), 0),
+                        COALESCE(SUM(gifs_count), 0),
+                        COALESCE(SUM(forwards_count), 0)
+                    FROM user_chat_stats
+                    """
+                )
+                (
+                    messages, chars, stickers,
+                    photos, videos, voice, gifs, forwards,
+                ) = cur.fetchone()
+    finally:
+        _put_conn(conn)
+
+    totals = {
+        "messages": messages, "chars": chars, "stickers": stickers,
+        "photos": photos, "videos": videos, "voice": voice,
+        "gifs": gifs, "forwards": forwards,
+    }
+    return total_users, total_chats, totals
