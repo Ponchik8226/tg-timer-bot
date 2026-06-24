@@ -57,6 +57,10 @@ TIMERS = {}
 # USER_TIMERS: user_id -> множество timer_id пользователя
 USER_TIMERS = {}
 
+# Лимиты таймеров
+MAX_TIMERS_PER_USER = 100                  # максимум активных таймеров на одного пользователя
+MAX_TIMER_DURATION = 365 * 24 * 3600      # максимальная длительность — 1 год в секундах
+
 _next_timer_id = 1
 _timers_lock = threading.Lock()
 
@@ -248,6 +252,26 @@ def _process_timer_request(message: types.Message, args_text: str):
     duration_seconds = parse_duration(time_part)
     if duration_seconds is None:
         _send_timer_usage_hint(message)
+        return
+
+    # Проверка максимальной длительности
+    if duration_seconds > MAX_TIMER_DURATION:
+        bot.reply_to(
+            message,
+            f"⚠️ Максимальная длительность таймера — 1 год. "
+            f"Укажите меньшее время.",
+        )
+        return
+
+    # Проверка лимита активных таймеров у пользователя
+    with _timers_lock:
+        user_timer_count = len(USER_TIMERS.get(message.from_user.id, set()))
+    if user_timer_count >= MAX_TIMERS_PER_USER:
+        bot.reply_to(
+            message,
+            f"⚠️ У вас уже {user_timer_count} активных таймеров (максимум {MAX_TIMERS_PER_USER}). "
+            f"Удалите старые через /mytimers, прежде чем создавать новые.",
+        )
         return
 
     create_timer(message, duration_seconds, description)
