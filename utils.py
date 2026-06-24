@@ -101,3 +101,59 @@ def split_message(text: str, limit: int = 4000):
     if current:
         chunks.append(current)
     return chunks
+
+
+def build_stats_report() -> str:
+    """Формирует текст отчёта /стата: сводка + топ-10 по активности."""
+    import database  # импорт здесь чтобы избежать циклических зависимостей
+
+    total_users, total_chats, totals = database.get_stats_overview()
+    top_rows = database.get_top_activity(limit=10)
+
+    lines = [
+        "<b>📊 Общая статистика</b>",
+        "",
+        f"👤 Пользователей: {total_users}",
+        f"💬 Чатов: {total_chats}",
+        f"✉️ Сообщений: {totals['messages']}",
+        f"🔠 Символов: {totals['chars']}",
+        f"🎟 Стикеров: {totals['stickers']}",
+        f"🖼 Фото: {totals['photos']}",
+        f"🎬 Видео: {totals['videos']}",
+        f"🎤 Голосовых: {totals['voice']}",
+        f"🎞 GIF: {totals['gifs']}",
+        f"↩️ Пересланных: {totals['forwards']}",
+    ]
+
+    if top_rows:
+        lines.append("")
+        lines.append("<b>🏆 Топ-10 по активности</b>")
+        for i, row in enumerate(top_rows, start=1):
+            (username, first_name, chat_title,
+             messages, chars, stickers, photos, videos, voice, gifs, forwards) = row
+
+            display_name = f"@{username}" if username else (first_name or "Без имени")
+            display_name = html.escape(display_name)
+            chat_label = html.escape(chat_title or "Без названия")
+
+            extra_parts = []
+            if stickers:
+                extra_parts.append(f"стикеры {stickers}")
+            if photos:
+                extra_parts.append(f"фото {photos}")
+            if videos:
+                extra_parts.append(f"видео {videos}")
+            if voice:
+                extra_parts.append(f"голосовые {voice}")
+            if gifs:
+                extra_parts.append(f"gif {gifs}")
+            if forwards:
+                extra_parts.append(f"пересланных {forwards}")
+            extra = f" ({', '.join(extra_parts)})" if extra_parts else ""
+
+            lines.append(
+                f"{i}. {display_name} — {chat_label}: "
+                f"{messages} сообщ., {chars} симв.{extra}"
+            )
+
+    return "\n".join(lines)

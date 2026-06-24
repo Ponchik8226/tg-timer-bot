@@ -14,7 +14,12 @@ from telebot import apihelper
 
 # --- Telegram-бот -------------------------------------------------------
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "ВАШ_ТОКЕН_ЗДЕСЬ")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "Переменная окружения BOT_TOKEN не задана! "
+        "Укажите токен бота в настройках Render → Environment."
+    )
 
 # Включаем поддержку middleware (нужно для учёта статистики в main.py).
 # ENABLE_MIDDLEWARE должен быть установлен до создания TeleBot.

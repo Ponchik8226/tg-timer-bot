@@ -292,57 +292,14 @@ def record_message_stats(
         _put_conn(conn)
 
 
-def get_stats_overview():
-    """Возвращает (total_users, total_chats, totals_dict) с суммарными счётчиками."""
-    conn = _get_conn()
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM users")
-                total_users = cur.fetchone()[0]
-
-                cur.execute("SELECT COUNT(*) FROM chats")
-                total_chats = cur.fetchone()[0]
-
-                cur.execute(
-                    """
-                    SELECT
-                        COALESCE(SUM(messages_count), 0),
-                        COALESCE(SUM(chars_count), 0),
-                        COALESCE(SUM(stickers_count), 0),
-                        COALESCE(SUM(photos_count), 0),
-                        COALESCE(SUM(videos_count), 0),
-                        COALESCE(SUM(voice_count), 0),
-                        COALESCE(SUM(gifs_count), 0),
-                        COALESCE(SUM(forwards_count), 0)
-                    FROM user_chat_stats
-                    """
-                )
-                (
-                    messages, chars, stickers,
-                    photos, videos, voice, gifs, forwards,
-                ) = cur.fetchone()
-    finally:
-        _put_conn(conn)
-
-    totals = {
-        "messages": messages,
-        "chars": chars,
-        "stickers": stickers,
-        "photos": photos,
-        "videos": videos,
-        "voice": voice,
-        "gifs": gifs,
-        "forwards": forwards,
-    }
-    return total_users, total_chats, totals
-
-
 def get_top_activity(limit=10):
     """
     Возвращает топ записей (пользователь, чат) по количеству сообщений:
     (username, first_name, chat_title, messages, chars, stickers, photos, videos, voice, gifs, forwards)
     """
+    if not db_enabled() or _pool is None:
+        return []
+
     conn = _get_conn()
     try:
         with conn:

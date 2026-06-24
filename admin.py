@@ -191,7 +191,7 @@ def register(bot_username: str):
             bot.reply_to(message, "⚠️ База данных не настроена.")
             return
 
-        from main import build_stats_report
+        from utils import build_stats_report
         report = build_stats_report()
         for chunk in split_message(report):
             bot.send_message(message.chat.id, chunk)
