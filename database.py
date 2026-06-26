@@ -292,14 +292,57 @@ def record_message_stats(
         _put_conn(conn)
 
 
+def get_stats_overview():
+    """Возвращает (total_users, total_chats, totals_dict) с суммарными счётчиками."""
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM users")
+                total_users = cur.fetchone()[0]
+
+                cur.execute("SELECT COUNT(*) FROM chats")
+                total_chats = cur.fetchone()[0]
+
+                cur.execute(
+                    """
+                    SELECT
+                        COALESCE(SUM(messages_count), 0),
+                        COALESCE(SUM(chars_count), 0),
+                        COALESCE(SUM(stickers_count), 0),
+                        COALESCE(SUM(photos_count), 0),
+                        COALESCE(SUM(videos_count), 0),
+                        COALESCE(SUM(voice_count), 0),
+                        COALESCE(SUM(gifs_count), 0),
+                        COALESCE(SUM(forwards_count), 0)
+                    FROM user_chat_stats
+                    """
+                )
+                (
+                    messages, chars, stickers,
+                    photos, videos, voice, gifs, forwards,
+                ) = cur.fetchone()
+    finally:
+        _put_conn(conn)
+
+    totals = {
+        "messages": messages,
+        "chars": chars,
+        "stickers": stickers,
+        "photos": photos,
+        "videos": videos,
+        "voice": voice,
+        "gifs": gifs,
+        "forwards": forwards,
+    }
+    return total_users, total_chats, totals
+
+
 def get_top_activity(limit=10):
     """
     Возвращает топ записей (пользователь, чат) по количеству сообщений:
     (username, first_name, chat_title, messages, chars, stickers, photos, videos, voice, gifs, forwards)
     """
-    if not db_enabled() or _pool is None:
-        return []
-
     conn = _get_conn()
     try:
         with conn:
@@ -574,3 +617,90 @@ def get_stats_overview():
         "gifs": gifs, "forwards": forwards,
     }
     return total_users, total_chats, totals
+
+
+def get_chat_stats(chat_id: int):
+    """
+    Суммарная статистика конкретного чата по всем пользователям.
+    Возвращает (participants, messages, chars, stickers, photos,
+                videos, voice, gifs, forwards) или None если чат не найден.
+    """
+    if not db_enabled() or _pool is None:
+        return None
+
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        COUNT(DISTINCT s.user_id),
+                        COALESCE(SUM(s.messages_count), 0),
+                        COALESCE(SUM(s.chars_count), 0),
+                        COALESCE(SUM(s.stickers_count), 0),
+                        COALESCE(SUM(s.photos_count), 0),
+                        COALESCE(SUM(s.videos_count), 0),
+                        COALESCE(SUM(s.voice_count), 0),
+                        COALESCE(SUM(s.gifs_count), 0),
+                        COALESCE(SUM(s.forwards_count), 0)
+                    FROM user_chat_stats s
+                    WHERE s.chat_id = %s
+                    """,
+                    (chat_id,),
+                )
+                return cur.fetchone()
+    finally:
+        _put_conn(conn)
+
+
+def get_chats_top_page(offset: int, limit: int = 10):
+    """
+    Топ бесед (без ЛС) по суммарному количеству сообщений с пагинацией.
+    Возвращает (rows, total_count).
+    rows: (chat_id, title, total_messages, chars, stickers,
+           photos, videos, voice, gifs, forwards)
+    """
+    if not db_enabled() or _pool is None:
+        return [], 0
+
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(DISTINCT c.chat_id)
+                    FROM chats c
+                    JOIN user_chat_stats s ON s.chat_id = c.chat_id
+                    WHERE c.chat_type != 'private'
+                    """
+                )
+                total = cur.fetchone()[0]
+
+                cur.execute(
+                    """
+                    SELECT
+                        c.chat_id,
+                        c.title,
+                        COALESCE(SUM(s.messages_count), 0) AS total_messages,
+                        COALESCE(SUM(s.chars_count), 0),
+                        COALESCE(SUM(s.stickers_count), 0),
+                        COALESCE(SUM(s.photos_count), 0),
+                        COALESCE(SUM(s.videos_count), 0),
+                        COALESCE(SUM(s.voice_count), 0),
+                        COALESCE(SUM(s.gifs_count), 0),
+                        COALESCE(SUM(s.forwards_count), 0)
+                    FROM chats c
+                    JOIN user_chat_stats s ON s.chat_id = c.chat_id
+                    WHERE c.chat_type != 'private'
+                    GROUP BY c.chat_id, c.title
+                    ORDER BY total_messages DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (limit, offset),
+                )
+                rows = cur.fetchall()
+        return rows, total
+    finally:
+        _put_conn(conn)

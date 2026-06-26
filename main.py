@@ -4,7 +4,7 @@ Telegram-бот для личного использования в группе
 Команды пользователей:
   /ping                              — проверка отклика + аптайм
   /t, /timer, "тайм", "таймер"       — установка таймера
-  /mytimers, "таймеры"              — список своих таймеров
+  /mytimers, "таймеры"               — список своих таймеров
   /del, /del_timer, /cancel,
   "удалить", "отмена"                — удаление таймера
   /start                             — приветствие
@@ -58,8 +58,8 @@ TIMERS = {}
 USER_TIMERS = {}
 
 # Лимиты таймеров
-MAX_TIMERS_PER_USER = 100                  # максимум активных таймеров на одного пользователя
-MAX_TIMER_DURATION = 365 * 24 * 3600      # максимальная длительность — 1 год в секундах
+MAX_TIMERS_PER_USER = 100
+MAX_TIMER_DURATION = 365 * 24 * 3600  # 1 год в секундах
 
 _next_timer_id = 1
 _timers_lock = threading.Lock()
@@ -185,7 +185,6 @@ def restore_timers():
         remaining = end_time - now
 
         if remaining <= 0:
-            # Таймер должен был сработать, пока бот был выключен — шлём сразу
             with _timers_lock:
                 TIMERS[timer_id] = {
                     "chat_id": chat_id,
@@ -226,8 +225,6 @@ def restore_timers():
         )
 
 
-# --- Подсказки и парсинг команд таймера --------------------------------------
-
 def _send_timer_usage_hint(message: types.Message):
     bot.reply_to(
         message,
@@ -254,18 +251,16 @@ def _process_timer_request(message: types.Message, args_text: str):
         _send_timer_usage_hint(message)
         return
 
-    # Проверка максимальной длительности
     if duration_seconds > MAX_TIMER_DURATION:
         bot.reply_to(
             message,
-            f"⚠️ Максимальная длительность таймера — 1 год. "
-            f"Укажите меньшее время.",
+            "⚠️ Максимальная длительность таймера — 1 год. Укажите меньшее время.",
         )
         return
 
-    # Проверка лимита активных таймеров у пользователя
     with _timers_lock:
         user_timer_count = len(USER_TIMERS.get(message.from_user.id, set()))
+
     if user_timer_count >= MAX_TIMERS_PER_USER:
         bot.reply_to(
             message,
@@ -330,7 +325,7 @@ def _process_cancel_request(message: types.Message, args_text: str):
 
 
 # =============================================================================
-#                          СТАТИСТИКА: УЧЁТ И ОТЧЁТ
+#                          СТАТИСТИКА: УЧЁТ
 # =============================================================================
 
 def track_message_stats(message: types.Message):
@@ -348,8 +343,7 @@ def track_message_stats(message: types.Message):
     else:
         chat_title = chat.title or str(chat.id)
 
-    # Пересланные сообщения — считаем только как пересыл, остальные счётчики
-    # не трогаем (это чужой контент, не активность пользователя).
+    # Пересланные сообщения — только в forwards_count
     is_forward = (
         message.forward_origin is not None
         or message.forward_from is not None
@@ -372,11 +366,9 @@ def track_message_stats(message: types.Message):
 
     content_type = message.content_type
 
-    # messages_count: считаем все типы сообщений кроме стикеров.
-    # Стикер — отдельная единица общения, идёт только в stickers_count.
-    is_sticker = content_type == "sticker"
-    messages = 0 if is_sticker else 1
-
+    # Все типы сообщений идут в messages_count (включая стикеры).
+    # Дополнительно каждый тип идёт в свой специфический счётчик.
+    messages = 1
     chars = stickers = photos = videos = voice = gifs = 0
 
     if content_type == "text":
@@ -440,7 +432,6 @@ def stats_middleware(bot_instance, message):
 #                          ОБРАБОТЧИКИ КОМАНД
 # =============================================================================
 
-# Username бота заполняется при старте в main() через bot.get_me()
 _BOT_USERNAME = ""
 
 HELP_TEXT = (
@@ -476,10 +467,7 @@ HELP_TEXT = (
 
 
 def _is_for_me(message: types.Message) -> bool:
-    """
-    Проверяет что слэш-команда адресована нашему боту (или вообще без @).
-    Нужно чтобы не отвечать на /start@другой_бот в группах.
-    """
+    """Проверяет что команда адресована нашему боту (или без @)."""
     text = message.text or ""
     if "@" not in text:
         return True
@@ -506,7 +494,6 @@ def handle_help(message: types.Message):
 
 @bot.message_handler(commands=["myid"])
 def handle_myid(message: types.Message):
-    """Показывает Telegram ID пользователя — удобно для настройки ADMIN_IDS."""
     bot.reply_to(message, f"🆔 Ваш Telegram ID: <code>{message.from_user.id}</code>")
 
 
@@ -587,10 +574,7 @@ def health_check():
 
 @web_app.route("/webhook", methods=["POST"])
 def webhook():
-    """
-    Telegram присылает сюда POST-запрос при каждом новом сообщении
-    или нажатии на inline-кнопку (callback_query).
-    """
+    """Telegram присылает сюда POST при каждом новом сообщении или callback."""
     if flask_request.headers.get("content-type") == "application/json":
         json_update = flask_request.get_data(as_text=True)
         update = types.Update.de_json(json_update)
@@ -608,7 +592,6 @@ def main():
 
     logger.info("Бот запускается...")
 
-    # Получаем username бота — нужен для фильтрации чужих команд в группах
     try:
         me = bot.get_me()
         _BOT_USERNAME = me.username or ""
@@ -619,10 +602,8 @@ def main():
     database.init_db()
     restore_timers()
 
-    # Регистрируем хендлеры админ-команд
     admin.register(_BOT_USERNAME)
 
-    # Адрес на Render, куда Telegram будет слать обновления.
     webhook_url = os.environ.get("WEBHOOK_URL", "").rstrip("/")
     if not webhook_url:
         logger.warning(
@@ -642,7 +623,6 @@ def main():
     bot.set_webhook(
         url=f"{webhook_url}/webhook",
         drop_pending_updates=True,
-        # callback_query — для inline-кнопок пагинации в топах
         allowed_updates=["message", "edited_message", "channel_post", "callback_query"],
     )
     logger.info("Webhook зарегистрирован: %s/webhook", webhook_url)
